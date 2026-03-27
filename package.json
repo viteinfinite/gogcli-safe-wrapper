@@ -1,0 +1,16 @@
+{
+  "name": "gws-security-wrapper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/server.ts",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.5"
+  },
+  "dependencies": {
+    "@napi-rs/keyring": "^1.2.0"
+  }
+}

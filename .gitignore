@@ -1,0 +1,29 @@
+node_modules/
+
+# macOS
+.DS_Store
+
+# Local secrets/env
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.json
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build and cache artifacts
+dist/
+build/
+coverage/
+.cache/
+.tmp/
+tmp/
+
+# Bun runtime artifacts
+.bun/
