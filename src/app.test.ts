@@ -71,6 +71,18 @@ class FakeTokenManager implements ScopedTokenManager {
     metadata.revokedAt = "2026-03-28T03:00:00.000Z";
   }
 
+  async revokeAllTokens(): Promise<number> {
+    let revoked = 0;
+    for (const metadata of this.metadata.values()) {
+      if (metadata.revokedAt) {
+        continue;
+      }
+      metadata.revokedAt = "2026-03-28T03:00:00.000Z";
+      revoked += 1;
+    }
+    return revoked;
+  }
+
   async listTokens() {
     return [...this.metadata.values()];
   }
@@ -193,6 +205,22 @@ describe("admin token endpoints", () => {
       }),
     );
     expect(revokeResponse.status).toBe(200);
+  });
+
+  it("revokes all tokens with admin auth", async () => {
+    const { app } = buildApp();
+    const response = await app.fetch(
+      new Request("http://localhost/auth/tokens/revoke-all", {
+        method: "POST",
+        headers: {
+          "X-Admin-Token": "admin-token",
+        },
+      }),
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { ok: boolean; revoked: number };
+    expect(body.ok).toBeTrue();
+    expect(body.revoked).toBeGreaterThan(0);
   });
 });
 

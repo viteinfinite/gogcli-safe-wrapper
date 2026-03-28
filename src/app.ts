@@ -23,6 +23,7 @@ export interface ScopedTokenManager {
     revokedAt?: string;
   }>;
   revokeToken(tokenId: string): Promise<void>;
+  revokeAllTokens(): Promise<number>;
   listTokens(): Promise<
     Array<{
       tokenId: string;
@@ -65,6 +66,10 @@ export function createApp(deps: AppDependencies): App {
 
       if (request.method === "POST" && url.pathname === "/auth/tokens/revoke") {
         return await handleRevokeToken(request, deps);
+      }
+
+      if (request.method === "POST" && url.pathname === "/auth/tokens/revoke-all") {
+        return await handleRevokeAllTokens(request, deps);
       }
 
       if (request.method === "POST" && url.pathname === "/api") {
@@ -162,6 +167,20 @@ async function handleRevokeToken(request: Request, deps: AppDependencies): Promi
     return jsonResponse(200, { ok: true, tokenId });
   } catch (error) {
     return jsonResponse(400, { error: stringifyErrorMessage(error, "token_revoke_failed") });
+  }
+}
+
+async function handleRevokeAllTokens(request: Request, deps: AppDependencies): Promise<Response> {
+  const provided = request.headers.get("x-admin-token");
+  if (!provided || provided !== deps.adminToken) {
+    return jsonResponse(401, { error: "unauthorized" });
+  }
+
+  try {
+    const revoked = await deps.tokenManager.revokeAllTokens();
+    return jsonResponse(200, { ok: true, revoked });
+  } catch (error) {
+    return jsonResponse(500, { error: stringifyErrorMessage(error, "token_revoke_all_failed") });
   }
 }
 

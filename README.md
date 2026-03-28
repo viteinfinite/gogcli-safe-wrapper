@@ -13,6 +13,7 @@
   - `POST /auth/rotate` (create or rotate scoped tokens)
   - `GET /auth/tokens` (list token metadata)
   - `POST /auth/tokens/revoke` (revoke token by id)
+  - `POST /auth/tokens/revoke-all` (revoke all active tokens)
 - Plain-text output passthrough from `gog` (merged stdout/stderr)
 - Strict subcommand denylist for shell metacharacters: `;`, `|`, `&`, `` ` ``, `$(`
 - Command allowlist policy built from canonical command groups
@@ -89,6 +90,7 @@ Auth matrix:
 - `/auth/rotate`: requires `X-Admin-Token`
 - `/auth/tokens`: requires `X-Admin-Token`
 - `/auth/tokens/revoke`: requires `X-Admin-Token`
+- `/auth/tokens/revoke-all`: requires `X-Admin-Token`
 - `/api` with `subcommand` starting by `auth`: requires `X-Admin-Token`
 - `/api` for all other subcommands: requires `Authorization: Bearer <access-token>`
 
@@ -151,6 +153,13 @@ curl -sS -X POST http://localhost:3000/auth/tokens/revoke \
   -H 'X-Admin-Token: <admin-token>' \
   -H 'Content-Type: application/json' \
   --data '{"tokenId":"tok_abc123"}'
+```
+
+Revoke all tokens:
+
+```bash
+curl -sS -X POST http://localhost:3000/auth/tokens/revoke-all \
+  -H 'X-Admin-Token: <admin-token>'
 ```
 
 Call `gog calendar calendars -a viteinfinite@gmail.com --plain`:

@@ -76,4 +76,17 @@ describe("ScopedTokenManager", () => {
     const resolved = await manager.resolveBearerToken(created.token);
     expect(resolved).toBeNull();
   });
+
+  it("revokes all active tokens", async () => {
+    const store = new InMemoryRegistryStore(null);
+    const manager = await ScopedTokenManager.initialize(store, new TestPolicy(), null);
+    const one = await manager.createToken("gmail:drafts");
+    const two = await manager.createToken("calendar");
+
+    const revoked = await manager.revokeAllTokens();
+    expect(revoked).toBe(2);
+
+    expect(await manager.resolveBearerToken(one.token)).toBeNull();
+    expect(await manager.resolveBearerToken(two.token)).toBeNull();
+  });
 });

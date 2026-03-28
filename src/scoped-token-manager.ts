@@ -114,6 +114,25 @@ export class ScopedTokenManager {
     await this.persist();
   }
 
+  async revokeAllTokens(): Promise<number> {
+    const now = new Date().toISOString();
+    let revoked = 0;
+    for (const record of this.registry.tokens) {
+      if (record.revokedAt) {
+        continue;
+      }
+      record.revokedAt = now;
+      record.updatedAt = now;
+      revoked += 1;
+    }
+
+    if (revoked > 0) {
+      await this.persist();
+    }
+
+    return revoked;
+  }
+
   async listTokens(): Promise<ScopedTokenMetadata[]> {
     return this.registry.tokens.map((token) => ({
       tokenId: token.tokenId,
