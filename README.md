@@ -5,13 +5,43 @@
 ## Features
 
 - `POST /api` executes `gog <subcommand>` with safe argv parsing (`shell: false`)
+- Scoped bearer tokens with per-top-level command scopes:
+  - `READ`
+  - `SAFE_WRITE`
+  - `FULL_WRITE`
 - Hybrid auth on `POST /api`:
-  - `gog auth*` subcommands require `X-Admin-Token`
-  - all other subcommands require `Authorization: Bearer <access-token>`
-- `POST /auth/rotate` rotates the API bearer token
+  - `gog auth*` subcommands require `X-Admin-Token` (admin-only)
+  - all other subcommands require `Authorization: Bearer <access-token>` + scope check
+- Token management APIs:
+  - `POST /auth/rotate` (create or rotate scoped tokens)
+  - `GET /auth/tokens` (list token metadata)
+  - `POST /auth/tokens/revoke` (revoke token by id)
 - Plain-text output passthrough from `gog` (merged stdout/stderr)
 - Strict subcommand denylist for shell metacharacters: `;`, `|`, `&`, `` ` ``, `$(`
-- Unit tests for auth, rotation, parsing, command execution, and platform checks
+- Command scope policy built from `gog schema --json` with conservative overrides
+
+## Scope Model
+
+Token scopes are assigned per top-level command key (format: `subcommand:SCOPE`).
+
+Available levels:
+
+- `READ`: read-only operations
+- `SAFE_WRITE`: non-destructive writes (for example create draft, modify metadata)
+- `FULL_WRITE`: sensitive/destructive writes (for example send/delete/share/revoke)
+
+Rules:
+
+- `/api` `auth*` commands are always admin-only (not bearer-scope controlled).
+- For non-`auth*`, missing scope entry is deny-by-default.
+- Scope check is hierarchical: `FULL_WRITE` >= `SAFE_WRITE` >= `READ`.
+- Aliases are normalized to canonical top-level command keys before evaluation.
+
+Action classification:
+
+- Policy is generated from `gog schema --json`.
+- Command leaves are classified with keyword rules + explicit overrides in code for ambiguous commands.
+- Unknown commands are denied with `403`.
 
 ## Prerequisites
 
@@ -39,7 +69,8 @@ Optional:
 Notes:
 
 - Secret backend uses native keyring access (`@napi-rs/keyring`).
-- API bearer token is stored under account `api-token` (or `GWS_KEYCHAIN_ACCOUNT`).
+- Scoped token registry is stored under account `api-token` (or `GWS_KEYCHAIN_ACCOUNT`).
+- Legacy single-token storage auto-migrates to scoped token registry on startup.
 
 ## Run
 
@@ -58,20 +89,70 @@ bun test
 Auth matrix:
 
 - `/auth/rotate`: requires `X-Admin-Token`
+- `/auth/tokens`: requires `X-Admin-Token`
+- `/auth/tokens/revoke`: requires `X-Admin-Token`
 - `/api` with `subcommand` starting by `auth`: requires `X-Admin-Token`
 - `/api` for all other subcommands: requires `Authorization: Bearer <access-token>`
 
-Rotate API token:
+`scopeSpec` format:
+
+- comma-separated `subcommand:SCOPE`
+- example: `gmail:SAFE_WRITE,calendar:FULL_WRITE,drive:READ`
+- `subcommand` is top-level command key (aliases normalized)
+- missing scope entry for a command => denied (`403`)
+
+Generate SAFE_WRITE token for Gmail + Calendar:
 
 ```bash
 curl -sS -X POST http://localhost:3000/auth/rotate \
-  -H 'X-Admin-Token: <admin-token>'
+  -H 'X-Admin-Token: <admin-token>' \
+  -H 'Content-Type: application/json' \
+  --data '{"scopeSpec":"gmail:SAFE_WRITE,calendar:SAFE_WRITE"}'
+```
+
+Create scoped token (`tokenId` omitted, `scopeSpec` required):
+
+```bash
+curl -sS -X POST http://localhost:3000/auth/rotate \
+  -H 'X-Admin-Token: <admin-token>' \
+  -H 'Content-Type: application/json' \
+  --data '{"scopeSpec":"gmail:SAFE_WRITE,calendar:READ"}'
 ```
 
 Example response:
 
 ```json
-{"token":"<new-api-token>"}
+{
+  "mode":"created",
+  "tokenId":"tok_abc123",
+  "token":"<new-access-token>",
+  "scopeSpec":"calendar:READ,gmail:SAFE_WRITE"
+}
+```
+
+Rotate existing token by id:
+
+```bash
+curl -sS -X POST http://localhost:3000/auth/rotate \
+  -H 'X-Admin-Token: <admin-token>' \
+  -H 'Content-Type: application/json' \
+  --data '{"tokenId":"tok_abc123"}'
+```
+
+List tokens (metadata only):
+
+```bash
+curl -sS http://localhost:3000/auth/tokens \
+  -H 'X-Admin-Token: <admin-token>'
+```
+
+Revoke token:
+
+```bash
+curl -sS -X POST http://localhost:3000/auth/tokens/revoke \
+  -H 'X-Admin-Token: <admin-token>' \
+  -H 'Content-Type: application/json' \
+  --data '{"tokenId":"tok_abc123"}'
 ```
 
 Call `gog calendar calendars -a viteinfinite@gmail.com --plain`:
@@ -83,7 +164,7 @@ curl -sS -X POST http://localhost:3000/api \
   --data '{"subcommand":"calendar calendars -a viteinfinite@gmail.com --plain"}'
 ```
 
-Call `gog auth status --plain`:
+Call admin-only `gog auth status --plain`:
 
 ```bash
 curl -sS -X POST http://localhost:3000/api \
@@ -120,9 +201,15 @@ The response body from `/api` should match the CLI text output.
 
 ## Deployable Skill
 
-This repo includes a reusable Codex skill at:
+This repo includes a reusable user-facing Codex skill at:
 
 - `.codex/skills/gog-wrapper-server`
+
+Skill purpose:
+
+- Focus on how to call `/api` safely with bearer tokens.
+- Explain command formatting and output interpretation.
+- Intentionally excludes admin/token-management workflows.
 
 To install for another user, copy that folder to:
 
