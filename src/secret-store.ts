@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import { dirname } from "node:path";
-import { getPassword, setPassword } from "@napi-rs/keyring/keytar";
+import { deletePassword, getPassword, setPassword } from "@napi-rs/keyring/keytar";
 
 export interface SecretStore {
   getSecret(account: string): Promise<string | null>;
@@ -15,6 +15,7 @@ interface SecretStoreFactoryOptions {
 interface NativeSecretBackend {
   getPassword(service: string, account: string): Promise<string | null>;
   setPassword(service: string, account: string, value: string): Promise<void>;
+  deletePassword(service: string, account: string): Promise<boolean>;
 }
 
 interface LinuxSecretStoreDeps {
@@ -24,6 +25,7 @@ interface LinuxSecretStoreDeps {
 const defaultNativeBackend: NativeSecretBackend = {
   getPassword,
   setPassword,
+  deletePassword,
 };
 
 export class MacOSKeychainSecretStore implements SecretStore {
@@ -44,7 +46,13 @@ export class MacOSKeychainSecretStore implements SecretStore {
     try {
       await this.nativeBackend.setPassword(this.service, account, value);
     } catch (error) {
-      throw new Error(`Failed to write secret to keychain: ${stringifyError(error)}`);
+      // Some keychains reject upsert semantics; retry with explicit delete + set.
+      try {
+        await this.nativeBackend.deletePassword(this.service, account);
+        await this.nativeBackend.setPassword(this.service, account, value);
+      } catch (retryError) {
+        throw new Error(`Failed to write secret to keychain: ${stringifyError(retryError)}`);
+      }
     }
   }
 }

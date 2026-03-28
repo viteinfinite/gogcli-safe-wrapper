@@ -47,6 +47,9 @@ describe("LinuxSecretStore fallback behavior", () => {
         async setPassword(): Promise<void> {
           throw new Error("native unavailable");
         },
+        async deletePassword(): Promise<boolean> {
+          throw new Error("native unavailable");
+        },
       },
     });
 
@@ -69,6 +72,9 @@ describe("LinuxSecretStore fallback behavior", () => {
         },
         async setPassword(): Promise<void> {
           return;
+        },
+        async deletePassword(): Promise<boolean> {
+          return true;
         },
       },
     });

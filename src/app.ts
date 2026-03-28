@@ -1,15 +1,49 @@
 import type { CommandRunner } from "./command-runner";
+import type { GogPolicy } from "./gog-policy";
 import { hasDisallowedMetacharacters, parseSubcommandToArgv } from "./argv";
 
-export interface TokenManager {
-  getToken(): Promise<string>;
-  rotateToken(): Promise<string>;
+export interface ScopedTokenManager {
+  createToken(scopeSpec: string): Promise<{
+    tokenId: string;
+    token: string;
+    scopeSpec: string;
+    createdAt: string;
+    updatedAt: string;
+    revokedAt?: string;
+  }>;
+  rotateToken(
+    tokenId: string,
+    scopeSpec?: string,
+  ): Promise<{
+    tokenId: string;
+    token: string;
+    scopeSpec: string;
+    createdAt: string;
+    updatedAt: string;
+    revokedAt?: string;
+  }>;
+  revokeToken(tokenId: string): Promise<void>;
+  listTokens(): Promise<
+    Array<{
+      tokenId: string;
+      scopeSpec: string;
+      createdAt: string;
+      updatedAt: string;
+      revokedAt?: string;
+    }>
+  >;
+  resolveBearerToken(token: string): Promise<{
+    tokenId: string;
+    scopeSpec: string;
+    scopes: Record<string, "READ" | "SAFE_WRITE" | "FULL_WRITE">;
+  } | null>;
 }
 
 export interface AppDependencies {
   adminToken: string;
   commandRunner: CommandRunner;
-  tokenManager: TokenManager;
+  tokenManager: ScopedTokenManager;
+  policy: GogPolicy;
 }
 
 export interface App {
@@ -23,6 +57,14 @@ export function createApp(deps: AppDependencies): App {
 
       if (request.method === "POST" && url.pathname === "/auth/rotate") {
         return await handleRotate(request, deps);
+      }
+
+      if (request.method === "GET" && url.pathname === "/auth/tokens") {
+        return await handleListTokens(request, deps);
+      }
+
+      if (request.method === "POST" && url.pathname === "/auth/tokens/revoke") {
+        return await handleRevokeToken(request, deps);
       }
 
       if (request.method === "POST" && url.pathname === "/api") {
@@ -40,8 +82,87 @@ async function handleRotate(request: Request, deps: AppDependencies): Promise<Re
     return jsonResponse(401, { error: "unauthorized" });
   }
 
-  const token = await deps.tokenManager.rotateToken();
-  return jsonResponse(200, { token });
+  let body: unknown;
+  try {
+    body = await parseOptionalJsonBody(request);
+  } catch {
+    return jsonResponse(400, { error: "invalid_json" });
+  }
+
+  const tokenId = extractOptionalStringField(body, "tokenId");
+  const scopeSpec = extractOptionalStringField(body, "scopeSpec");
+
+  if (tokenId) {
+    try {
+      const issued = await deps.tokenManager.rotateToken(tokenId, scopeSpec ?? undefined);
+      return jsonResponse(200, {
+        mode: "rotated",
+        tokenId: issued.tokenId,
+        token: issued.token,
+        scopeSpec: issued.scopeSpec,
+        createdAt: issued.createdAt,
+        updatedAt: issued.updatedAt,
+        revokedAt: issued.revokedAt,
+      });
+    } catch (error) {
+      return jsonResponse(400, { error: stringifyErrorMessage(error, "token_rotation_failed") });
+    }
+  }
+
+  if (scopeSpec) {
+    try {
+      const issued = await deps.tokenManager.createToken(scopeSpec);
+      return jsonResponse(200, {
+        mode: "created",
+        tokenId: issued.tokenId,
+        token: issued.token,
+        scopeSpec: issued.scopeSpec,
+        createdAt: issued.createdAt,
+        updatedAt: issued.updatedAt,
+        revokedAt: issued.revokedAt,
+      });
+    } catch (error) {
+      return jsonResponse(400, { error: stringifyErrorMessage(error, "token_creation_failed") });
+    }
+  }
+
+  return jsonResponse(400, { error: "tokenId or scopeSpec is required" });
+}
+
+async function handleListTokens(request: Request, deps: AppDependencies): Promise<Response> {
+  const provided = request.headers.get("x-admin-token");
+  if (!provided || provided !== deps.adminToken) {
+    return jsonResponse(401, { error: "unauthorized" });
+  }
+
+  const tokens = await deps.tokenManager.listTokens();
+  return jsonResponse(200, { tokens });
+}
+
+async function handleRevokeToken(request: Request, deps: AppDependencies): Promise<Response> {
+  const provided = request.headers.get("x-admin-token");
+  if (!provided || provided !== deps.adminToken) {
+    return jsonResponse(401, { error: "unauthorized" });
+  }
+
+  let body: unknown;
+  try {
+    body = await parseOptionalJsonBody(request);
+  } catch {
+    return jsonResponse(400, { error: "invalid_json" });
+  }
+
+  const tokenId = extractOptionalStringField(body, "tokenId");
+  if (!tokenId) {
+    return jsonResponse(400, { error: "tokenId is required" });
+  }
+
+  try {
+    await deps.tokenManager.revokeToken(tokenId);
+    return jsonResponse(200, { ok: true, tokenId });
+  } catch (error) {
+    return jsonResponse(400, { error: stringifyErrorMessage(error, "token_revoke_failed") });
+  }
 }
 
 async function handleApi(request: Request, deps: AppDependencies): Promise<Response> {
@@ -68,7 +189,12 @@ async function handleApi(request: Request, deps: AppDependencies): Promise<Respo
     return jsonResponse(400, { error: stringifyErrorMessage(error, "invalid_subcommand") });
   }
 
-  if (isAuthSubcommand(argv)) {
+  const access = deps.policy.resolveAccess(argv);
+  if (access.kind === "unknown") {
+    return jsonResponse(403, { error: "forbidden_by_scope_policy", reason: access.reason });
+  }
+
+  if (access.kind === "admin") {
     const providedAdminToken = request.headers.get("x-admin-token");
     if (!providedAdminToken || providedAdminToken !== deps.adminToken) {
       return jsonResponse(401, { error: "unauthorized" });
@@ -79,9 +205,23 @@ async function handleApi(request: Request, deps: AppDependencies): Promise<Respo
       return jsonResponse(401, { error: "unauthorized" });
     }
 
-    const currentToken = await deps.tokenManager.getToken();
-    if (bearer !== currentToken) {
+    const resolvedToken = await deps.tokenManager.resolveBearerToken(bearer);
+    if (!resolvedToken) {
       return jsonResponse(401, { error: "unauthorized" });
+    }
+
+    const granted = resolvedToken.scopes[access.topLevel];
+    if (!granted) {
+      return jsonResponse(403, {
+        error: "forbidden_by_scope_policy",
+        reason: `missing scope for '${access.topLevel}'`,
+      });
+    }
+    if (!hasRequiredScope(granted, access.requiredScope)) {
+      return jsonResponse(403, {
+        error: "forbidden_by_scope_policy",
+        reason: `required=${access.requiredScope} granted=${granted} for '${access.topLevel}'`,
+      });
     }
   }
 
@@ -98,10 +238,6 @@ async function handleApi(request: Request, deps: AppDependencies): Promise<Respo
   }
 }
 
-function isAuthSubcommand(argv: string[]): boolean {
-  return argv[0] === "auth";
-}
-
 function extractBearerToken(value: string | null): string | null {
   if (!value) {
     return null;
@@ -113,6 +249,37 @@ function extractBearerToken(value: string | null): string | null {
   }
 
   return token;
+}
+
+async function parseOptionalJsonBody(request: Request): Promise<unknown> {
+  const text = await request.text();
+  if (!text.trim()) {
+    return {};
+  }
+  return JSON.parse(text);
+}
+
+function extractOptionalStringField(body: unknown, field: string): string | null {
+  if (!body || typeof body !== "object") {
+    return null;
+  }
+  const value = (body as Record<string, unknown>)[field];
+  if (typeof value !== "string" || !value.trim()) {
+    return null;
+  }
+  return value.trim();
+}
+
+function hasRequiredScope(
+  granted: "READ" | "SAFE_WRITE" | "FULL_WRITE",
+  required: "READ" | "SAFE_WRITE" | "FULL_WRITE",
+): boolean {
+  const score = {
+    READ: 1,
+    SAFE_WRITE: 2,
+    FULL_WRITE: 3,
+  } as const;
+  return score[granted] >= score[required];
 }
 
 function extractSubcommand(body: unknown): string | null {

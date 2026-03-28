@@ -2,7 +2,8 @@ import { createApp } from "./app";
 import { GogCommandRunner } from "./command-runner";
 import { loadConfig, type AppConfig } from "./config";
 import { createSecretStore } from "./secret-store";
-import { ApiTokenManager } from "./token-store";
+import { loadGogPolicy } from "./gog-policy";
+import { ScopedTokenManager } from "./scoped-token-manager";
 
 export async function startServer(config: AppConfig = loadConfig()) {
   const secretStore = createSecretStore(config.platform, {
@@ -10,11 +11,16 @@ export async function startServer(config: AppConfig = loadConfig()) {
     linuxFallbackPath: config.linuxFallbackPath,
   });
 
-  const tokenStore = {
-    getToken: async () => await secretStore.getSecret(config.apiTokenAccount),
-    setToken: async (token: string) => await secretStore.setSecret(config.apiTokenAccount, token),
-  };
-  const tokenManager = await ApiTokenManager.initialize(tokenStore);
+  const policy = loadGogPolicy(config.gogBin);
+  const tokenManager = await ScopedTokenManager.initialize(
+    {
+      getRegistryPayload: async () => await secretStore.getSecret(config.apiTokenAccount),
+      setRegistryPayload: async (payload: string) =>
+        await secretStore.setSecret(config.apiTokenAccount, payload),
+    },
+    policy,
+    await secretStore.getSecret(config.apiTokenAccount),
+  );
   const adminToken = await secretStore.getSecret(config.adminTokenAccount);
   if (!adminToken) {
     throw new Error(
@@ -27,6 +33,7 @@ export async function startServer(config: AppConfig = loadConfig()) {
     adminToken,
     tokenManager,
     commandRunner,
+    policy,
   });
 
   const server = Bun.serve({
