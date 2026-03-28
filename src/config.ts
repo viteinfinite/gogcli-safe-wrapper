@@ -9,10 +9,10 @@ export interface AppConfig {
 }
 
 const DEFAULT_PORT = 3000;
-const DEFAULT_SECRET_SERVICE = "gws-security-wrapper";
+const DEFAULT_SECRET_SERVICE = "gogcli-security-wrapper";
 const DEFAULT_API_TOKEN_ACCOUNT = "api-token";
 const DEFAULT_ADMIN_TOKEN_ACCOUNT = "admin-token";
-const DEFAULT_LINUX_FALLBACK_PATH = "~/.config/gws-security-wrapper/secrets.json";
+const DEFAULT_LINUX_FALLBACK_PATH = "~/.config/gogcli-security-wrapper/secrets.json";
 
 function parsePort(rawPort: string | undefined): number {
   if (!rawPort) {

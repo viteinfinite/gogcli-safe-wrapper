@@ -36,7 +36,7 @@ curl -sS -X POST http://localhost:3000/api \
   --data '{"subcommand":"gmail messages search \"in:inbox\" -a viteinfinite@gmail.com --plain"}'
 ```
 
-Create a Gmail draft (SAFE_WRITE):
+Create a Gmail draft:
 
 ```bash
 curl -sS -X POST http://localhost:3000/api \

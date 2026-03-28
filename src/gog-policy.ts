@@ -1,5 +1,4 @@
 import { spawnSync } from "node:child_process";
-import { normalizeScopeLevel, type ScopeLevel } from "./scopes";
 
 export type AccessRequirement =
   | {
@@ -11,7 +10,7 @@ export type AccessRequirement =
       kind: "scoped";
       canonicalCommand: string;
       topLevel: string;
-      requiredScope: ScopeLevel;
+      allowEntries: string[];
     }
   | {
       kind: "unknown";
@@ -20,7 +19,7 @@ export type AccessRequirement =
 
 export interface GogPolicy {
   resolveAccess(argv: string[]): AccessRequirement;
-  parseScopeSpec(spec: string): { scopeMap: Record<string, ScopeLevel>; normalizedSpec: string };
+  parseScopeSpec(spec: string): { allowMap: Record<string, true>; normalizedSpec: string };
   allScopedTopLevels(): string[];
 }
 
@@ -38,104 +37,6 @@ interface TreeNode {
   children: TreeNode[];
 }
 
-const READ_KEYWORDS = [
-  "list",
-  "ls",
-  "get",
-  "info",
-  "show",
-  "search",
-  "find",
-  "status",
-  "history",
-  "path",
-  "keys",
-  "cat",
-  "structure",
-  "url",
-  "colors",
-  "time",
-  "freebusy",
-  "conflicts",
-  "export",
-  "download",
-  "read",
-  "whoami",
-  "me",
-  "version",
-  "schema",
-];
-
-const SAFE_WRITE_KEYWORDS = [
-  "create",
-  "add",
-  "new",
-  "update",
-  "edit",
-  "set",
-  "insert",
-  "append",
-  "modify",
-  "rename",
-  "move",
-  "mkdir",
-  "format",
-  "freeze",
-  "resize",
-  "mark-read",
-  "unread",
-  "react",
-  "reply",
-  "respond",
-  "watch",
-  "done",
-  "undo",
-  "write",
-  "replace-slide",
-];
-
-const FULL_WRITE_KEYWORDS = [
-  "send",
-  "delete",
-  "remove",
-  "rm",
-  "del",
-  "trash",
-  "unshare",
-  "share",
-  "suspend",
-  "accept",
-  "return",
-  "turn-in",
-  "reclaim",
-  "join",
-  "leave",
-  "archive",
-  "unarchive",
-  "run",
-  "start",
-  "stop",
-  "clear",
-];
-
-// Conservative overrides for ambiguous commands where keyword heuristics can be misleading.
-const FORCE_SCOPE: Record<string, ScopeLevel> = {
-  "calendar respond": "FULL_WRITE",
-  "config set": "FULL_WRITE",
-  "config unset": "FULL_WRITE",
-  "docs export": "READ",
-  "download": "READ",
-  "drive download": "READ",
-  "gmail drafts send": "FULL_WRITE",
-  "gmail send": "FULL_WRITE",
-  "keep attachment": "READ",
-  "send": "FULL_WRITE",
-  "sheets export": "READ",
-  "slides export": "READ",
-  "tasks done": "SAFE_WRITE",
-  "tasks undo": "SAFE_WRITE",
-};
-
 export function loadGogPolicy(gogBin: string): GogPolicy {
   const schemaRoot = loadSchemaRoot(gogBin);
   const root = buildTree({
@@ -143,27 +44,22 @@ export function loadGogPolicy(gogBin: string): GogPolicy {
     name: "",
     aliases: [],
   });
+
   const leafHelpMap = new Map<string, string>();
   const leafPaths = collectLeafPaths(root, [], leafHelpMap);
   const aliasRedirects = collectAliasRedirects(leafHelpMap);
-  const normalizedLeafPaths = leafPaths.map((path) => applyRedirects(path, aliasRedirects));
-
-  const requiredScopeByLeaf = new Map<string, ScopeLevel>();
-  for (const normalizedPath of normalizedLeafPaths) {
-    const key = normalizedPath.join(" ");
-    const help = leafHelpMap.get(normalizedPath.join(" ")) ?? leafHelpMap.get(key) ?? "";
-    requiredScopeByLeaf.set(key, classifyRequiredScope(normalizedPath, help));
-  }
+  const normalizedLeafPaths = leafPaths
+    .map((path) => applyRedirects(path, aliasRedirects))
+    .filter((path) => path.length > 0);
 
   const scopedTopLevels = Array.from(
-    new Set(
-      normalizedLeafPaths
-        .map((parts) => parts[0])
-        .filter((part) => part.length > 0 && part !== "auth"),
-    ),
+    new Set(normalizedLeafPaths.map((path) => path[0]).filter((topLevel) => topLevel !== "auth")),
   ).sort();
+  const scopedTopLevelSet = new Set(scopedTopLevels);
 
+  const groupCatalogByTopLevel = buildGroupCatalog(normalizedLeafPaths);
   const topLevelAliasToCanonical = buildTopLevelAliasMap(root, aliasRedirects);
+  const groupAliasByTopLevel = buildGroupAliasMap(root, aliasRedirects);
 
   return {
     resolveAccess(argv: string[]): AccessRequirement {
@@ -192,71 +88,98 @@ export function loadGogPolicy(gogBin: string): GogPolicy {
         };
       }
 
-      const leafScope = requiredScopeByLeaf.get(canonicalCommand);
-      if (!leafScope) {
-        // Command groups (e.g. `calendar --help`) default to READ if top-level is known.
-        if (scopedTopLevels.includes(topLevel)) {
-          return {
-            kind: "scoped",
-            canonicalCommand,
-            topLevel,
-            requiredScope: "READ",
-          };
-        }
-        return { kind: "unknown", reason: "command not in policy catalog" };
+      if (!scopedTopLevelSet.has(topLevel)) {
+        return { kind: "unknown", reason: "top-level command is not allowlist-managed" };
+      }
+
+      if (redirected.length < 2) {
+        return {
+          kind: "scoped",
+          canonicalCommand,
+          topLevel,
+          allowEntries: [topLevel],
+        };
+      }
+
+      const group = redirected[1];
+      const groups = groupCatalogByTopLevel.get(topLevel);
+      if (!groups || !groups.has(group)) {
+        return { kind: "unknown", reason: "command group not in policy catalog" };
       }
 
       return {
         kind: "scoped",
         canonicalCommand,
         topLevel,
-        requiredScope: leafScope,
+        allowEntries: [topLevel, `${topLevel}:${group}`],
       };
     },
 
-    parseScopeSpec(spec: string): { scopeMap: Record<string, ScopeLevel>; normalizedSpec: string } {
+    parseScopeSpec(spec: string): { allowMap: Record<string, true>; normalizedSpec: string } {
       const entries = spec
         .split(",")
         .map((part) => part.trim())
         .filter((part) => part.length > 0);
       if (entries.length === 0) {
-        throw new Error("scopeSpec must contain at least one subcommand:SCOPE entry");
+        throw new Error("scopeSpec must contain at least one allowlist entry");
       }
 
-      const scopeMap: Record<string, ScopeLevel> = {};
+      const allowMap: Record<string, true> = {};
       for (const entry of entries) {
-        const [rawKey, rawScope, extra] = entry.split(":");
-        if (!rawKey || !rawScope || extra !== undefined) {
-          throw new Error(`Invalid scope entry: '${entry}'`);
+        const parts = entry.split(":");
+        if (parts.length > 2) {
+          throw new Error(`Invalid allowlist entry: '${entry}'`);
         }
 
-        const canonicalKey = normalizeTopLevelKey(rawKey.trim(), topLevelAliasToCanonical);
-        if (!canonicalKey) {
-          throw new Error(`Unknown top-level subcommand in scope entry: '${rawKey.trim()}'`);
-        }
-        if (canonicalKey === "auth") {
-          throw new Error("auth scope entry is not allowed; auth* commands are admin-only");
-        }
-        if (!scopedTopLevels.includes(canonicalKey)) {
-          throw new Error(`Subcommand '${canonicalKey}' is not scope-managed`);
-        }
-        if (scopeMap[canonicalKey]) {
-          throw new Error(`Duplicate scope entry for subcommand '${canonicalKey}'`);
+        const rawTopLevel = parts[0]?.trim();
+        if (!rawTopLevel) {
+          throw new Error(`Invalid allowlist entry: '${entry}'`);
         }
 
-        const normalizedScope = normalizeScopeLevel(rawScope);
-        if (!normalizedScope) {
-          throw new Error(`Invalid scope level '${rawScope}' in entry '${entry}'`);
+        const canonicalTopLevel = normalizeTopLevelKey(rawTopLevel, topLevelAliasToCanonical);
+        if (!canonicalTopLevel) {
+          throw new Error(`Unknown top-level command in allowlist entry: '${rawTopLevel}'`);
         }
-        scopeMap[canonicalKey] = normalizedScope;
+        if (canonicalTopLevel === "auth") {
+          throw new Error("auth allowlist entry is not allowed; auth* commands are admin-only");
+        }
+        if (!scopedTopLevelSet.has(canonicalTopLevel)) {
+          throw new Error(`Command '${canonicalTopLevel}' is not allowlist-managed`);
+        }
+
+        let normalizedKey = canonicalTopLevel;
+        if (parts.length === 2) {
+          const rawGroup = parts[1]?.trim();
+          if (!rawGroup) {
+            throw new Error(`Invalid allowlist entry: '${entry}'`);
+          }
+
+          const canonicalGroup = normalizeGroupKey(canonicalTopLevel, rawGroup, groupAliasByTopLevel);
+          if (!canonicalGroup) {
+            throw new Error(
+              `Unknown command group '${rawGroup}' for top-level command '${canonicalTopLevel}'`,
+            );
+          }
+
+          const groupCatalog = groupCatalogByTopLevel.get(canonicalTopLevel);
+          if (!groupCatalog || !groupCatalog.has(canonicalGroup)) {
+            throw new Error(`Command group '${canonicalTopLevel}:${canonicalGroup}' is not allowlist-managed`);
+          }
+
+          normalizedKey = `${canonicalTopLevel}:${canonicalGroup}`;
+        }
+
+        if (allowMap[normalizedKey]) {
+          throw new Error(`Duplicate allowlist entry '${normalizedKey}'`);
+        }
+        allowMap[normalizedKey] = true;
       }
 
-      const normalizedSpec = Object.entries(scopeMap)
-        .sort((a, b) => a[0].localeCompare(b[0]))
-        .map(([key, scope]) => `${key}:${scope}`)
+      const normalizedSpec = Object.keys(allowMap)
+        .sort((a, b) => a.localeCompare(b))
         .join(",");
 
-      return { scopeMap, normalizedSpec };
+      return { allowMap, normalizedSpec };
     },
 
     allScopedTopLevels(): string[] {
@@ -265,29 +188,25 @@ export function loadGogPolicy(gogBin: string): GogPolicy {
   };
 }
 
-function classifyRequiredScope(pathParts: string[], helpText: string): ScopeLevel {
-  const key = pathParts.join(" ");
-  if (FORCE_SCOPE[key]) {
-    return FORCE_SCOPE[key];
+function buildGroupCatalog(normalizedLeafPaths: string[][]): Map<string, Set<string>> {
+  const map = new Map<string, Set<string>>();
+  for (const path of normalizedLeafPaths) {
+    const topLevel = path[0];
+    if (!topLevel || topLevel === "auth") {
+      continue;
+    }
+
+    if (!map.has(topLevel)) {
+      map.set(topLevel, new Set());
+    }
+
+    const group = path[1];
+    if (group) {
+      map.get(topLevel)?.add(group);
+    }
   }
 
-  const text = `${key} ${helpText}`.toLowerCase();
-  if (matchesAnyKeyword(text, FULL_WRITE_KEYWORDS)) {
-    return "FULL_WRITE";
-  }
-  if (matchesAnyKeyword(text, SAFE_WRITE_KEYWORDS)) {
-    return "SAFE_WRITE";
-  }
-  if (matchesAnyKeyword(text, READ_KEYWORDS)) {
-    return "READ";
-  }
-
-  // Conservative default for ambiguous commands: treat as FULL_WRITE.
-  return "FULL_WRITE";
-}
-
-function matchesAnyKeyword(text: string, keywords: string[]): boolean {
-  return keywords.some((keyword) => text.includes(keyword));
+  return map;
 }
 
 function loadSchemaRoot(gogBin: string): SchemaNode {
@@ -399,6 +318,32 @@ function buildTopLevelAliasMap(root: TreeNode, redirects: Map<string, string[]>)
   return map;
 }
 
+function buildGroupAliasMap(root: TreeNode, redirects: Map<string, string[]>): Map<string, Map<string, string>> {
+  const byTopLevel = new Map<string, Map<string, string>>();
+
+  for (const topLevelNode of root.children) {
+    const canonicalTopLevel = applyRedirects([topLevelNode.name], redirects)[0] ?? topLevelNode.name;
+    if (!byTopLevel.has(canonicalTopLevel)) {
+      byTopLevel.set(canonicalTopLevel, new Map<string, string>());
+    }
+    const groupMap = byTopLevel.get(canonicalTopLevel);
+    if (!groupMap) {
+      continue;
+    }
+
+    for (const groupNode of topLevelNode.children) {
+      const canonicalPath = applyRedirects([canonicalTopLevel, groupNode.name], redirects);
+      const canonicalGroup = canonicalPath[1] ?? groupNode.name;
+      groupMap.set(groupNode.name.toLowerCase(), canonicalGroup);
+      for (const alias of groupNode.aliases) {
+        groupMap.set(alias.toLowerCase(), canonicalGroup);
+      }
+    }
+  }
+
+  return byTopLevel;
+}
+
 function resolveCanonicalPath(root: TreeNode, argv: string[]): { commandPath: string[] } | null {
   const commandPath: string[] = [];
   let node = root;
@@ -425,10 +370,7 @@ function resolveCanonicalPath(root: TreeNode, argv: string[]): { commandPath: st
 function findMatchingChild(node: TreeNode, token: string): TreeNode | null {
   const lowered = token.toLowerCase();
   for (const child of node.children) {
-    if (child.name.toLowerCase() === lowered) {
-      return child;
-    }
-    if (child.aliases.has(lowered) || Array.from(child.aliases).some((alias) => alias.toLowerCase() === lowered)) {
+    if (child.name.toLowerCase() === lowered || child.aliases.has(lowered)) {
       return child;
     }
   }
@@ -438,6 +380,18 @@ function findMatchingChild(node: TreeNode, token: string): TreeNode | null {
 function normalizeTopLevelKey(key: string, aliasMap: Map<string, string>): string | null {
   const lowered = key.toLowerCase();
   return aliasMap.get(lowered) ?? null;
+}
+
+function normalizeGroupKey(
+  topLevel: string,
+  group: string,
+  groupAliasByTopLevel: Map<string, Map<string, string>>,
+): string | null {
+  const groupMap = groupAliasByTopLevel.get(topLevel);
+  if (!groupMap) {
+    return null;
+  }
+  return groupMap.get(group.toLowerCase()) ?? null;
 }
 
 function applyRedirects(path: string[], redirects: Map<string, string[]>): string[] {

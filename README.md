@@ -1,46 +1,38 @@
-# gws-security-wrapper
+# gogcli-security-wrapper
 
-`gws-security-wrapper` is a Bun HTTP server that wraps [`gog`](https://github.com/steipete/gogcli) commands behind token-based auth.
+`gogcli-security-wrapper` is a Bun HTTP server that wraps [`gog`](https://github.com/steipete/gogcli) commands behind token-based auth.
 
 ## Features
 
 - `POST /api` executes `gog <subcommand>` with safe argv parsing (`shell: false`)
-- Scoped bearer tokens with per-top-level command scopes:
-  - `READ`
-  - `SAFE_WRITE`
-  - `FULL_WRITE`
+- Scoped bearer tokens with explicit command allowlists.
 - Hybrid auth on `POST /api`:
   - `gog auth*` subcommands require `X-Admin-Token` (admin-only)
-  - all other subcommands require `Authorization: Bearer <access-token>` + scope check
+  - all other subcommands require `Authorization: Bearer <access-token>` + allowlist check
 - Token management APIs:
   - `POST /auth/rotate` (create or rotate scoped tokens)
   - `GET /auth/tokens` (list token metadata)
   - `POST /auth/tokens/revoke` (revoke token by id)
 - Plain-text output passthrough from `gog` (merged stdout/stderr)
 - Strict subcommand denylist for shell metacharacters: `;`, `|`, `&`, `` ` ``, `$(`
-- Command scope policy built from `gog schema --json` with conservative overrides
+- Command allowlist policy built from canonical command groups
 
-## Scope Model
+## Allowlist Model
 
-Token scopes are assigned per top-level command key (format: `subcommand:SCOPE`).
+Token permissions are assigned as explicit allowlist entries:
 
-Available levels:
-
-- `READ`: read-only operations
-- `SAFE_WRITE`: non-destructive writes (for example create draft, modify metadata)
-- `FULL_WRITE`: sensitive/destructive writes (for example send/delete/share/revoke)
+- `<top-level>` (for example `gmail`) allows all discovered groups under that top-level command.
+- `<top-level>:<group>` (for example `gmail:search`) allows only one discovered group.
 
 Rules:
 
 - `/api` `auth*` commands are always admin-only (not bearer-scope controlled).
-- For non-`auth*`, missing scope entry is deny-by-default.
-- Scope check is hierarchical: `FULL_WRITE` >= `SAFE_WRITE` >= `READ`.
-- Aliases are normalized to canonical top-level command keys before evaluation.
+- For non-`auth*`, missing allowlist entry is deny-by-default.
+- Aliases are normalized to canonical command keys before evaluation.
 
-Action classification:
+Command catalog:
 
-- Policy is generated from `gog schema --json`.
-- Command leaves are classified with keyword rules + explicit overrides in code for ambiguous commands.
+- Policy is generated from canonical command-group discovery (`gog schema --json` at runtime).
 - Unknown commands are denied with `403`.
 
 ## Prerequisites
@@ -54,17 +46,17 @@ Action classification:
 Required:
 
 - Admin secret in keychain/secret-store:
-  - service: `gws-security-wrapper` (or `GWS_SECRET_SERVICE`)
+  - service: `gogcli-security-wrapper` (or `GWS_SECRET_SERVICE`)
   - account: `admin-token` (or `GWS_ADMIN_ACCOUNT`)
 
 Optional:
 
 - `PORT` (default: `3000`)
 - `GOG_BIN` (default: `gog`)
-- `GWS_SECRET_SERVICE` (default: `gws-security-wrapper`)
+- `GWS_SECRET_SERVICE` (default: `gogcli-security-wrapper`)
 - `GWS_KEYCHAIN_ACCOUNT` (default: `api-token`)
 - `GWS_ADMIN_ACCOUNT` (default: `admin-token`)
-- `GWS_SECRET_FILE` (Linux fallback file, default: `~/.config/gws-security-wrapper/secrets.json`)
+- `GWS_SECRET_FILE` (Linux fallback file, default: `~/.config/gogcli-security-wrapper/secrets.json`)
 
 Notes:
 
@@ -84,6 +76,12 @@ bun run src/server.ts
 bun test
 ```
 
+Discover canonical third-level allowlist keys from latest public `gog`:
+
+```bash
+bun run discover:gog-third-level
+```
+
 ## API Examples
 
 Auth matrix:
@@ -96,18 +94,18 @@ Auth matrix:
 
 `scopeSpec` format:
 
-- comma-separated `subcommand:SCOPE`
-- example: `gmail:SAFE_WRITE,calendar:FULL_WRITE,drive:READ`
-- `subcommand` is top-level command key (aliases normalized)
-- missing scope entry for a command => denied (`403`)
+- comma-separated allowlist entries
+- example: `gmail,calendar:search,drive`
+- each entry is either a top-level command key or `top-level:group` (aliases normalized)
+- missing allowlist entry for a command => denied (`403`)
 
-Generate SAFE_WRITE token for Gmail + Calendar:
+Generate token for all Gmail commands and only Calendar search:
 
 ```bash
 curl -sS -X POST http://localhost:3000/auth/rotate \
   -H 'X-Admin-Token: <admin-token>' \
   -H 'Content-Type: application/json' \
-  --data '{"scopeSpec":"gmail:SAFE_WRITE,calendar:SAFE_WRITE"}'
+  --data '{"scopeSpec":"gmail,calendar:search"}'
 ```
 
 Create scoped token (`tokenId` omitted, `scopeSpec` required):
@@ -116,7 +114,7 @@ Create scoped token (`tokenId` omitted, `scopeSpec` required):
 curl -sS -X POST http://localhost:3000/auth/rotate \
   -H 'X-Admin-Token: <admin-token>' \
   -H 'Content-Type: application/json' \
-  --data '{"scopeSpec":"gmail:SAFE_WRITE,calendar:READ"}'
+  --data '{"scopeSpec":"gmail:drafts,calendar"}'
 ```
 
 Example response:
@@ -126,7 +124,7 @@ Example response:
   "mode":"created",
   "tokenId":"tok_abc123",
   "token":"<new-access-token>",
-  "scopeSpec":"calendar:READ,gmail:SAFE_WRITE"
+  "scopeSpec":"calendar,gmail:drafts"
 }
 ```
 

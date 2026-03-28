@@ -14,34 +14,34 @@ class FakeRunner implements CommandRunner {
 }
 
 class FakeTokenManager implements ScopedTokenManager {
-  private readonly tokenByBearer = new Map<string, { tokenId: string; scopeSpec: string; scopes: Record<string, "READ" | "SAFE_WRITE" | "FULL_WRITE"> }>();
+  private readonly tokenByBearer = new Map<string, { tokenId: string; scopeSpec: string; allows: Record<string, true> }>();
   private readonly metadata = new Map<string, { tokenId: string; scopeSpec: string; createdAt: string; updatedAt: string; revokedAt?: string }>();
 
   constructor() {
     const now = "2026-03-28T00:00:00.000Z";
     this.tokenByBearer.set("good-safe", {
       tokenId: "tok_safe",
-      scopeSpec: "gmail:SAFE_WRITE",
-      scopes: { gmail: "SAFE_WRITE" },
+      scopeSpec: "gmail:drafts",
+      allows: { "gmail:drafts": true },
     });
     this.tokenByBearer.set("good-read", {
       tokenId: "tok_read",
-      scopeSpec: "gmail:READ",
-      scopes: { gmail: "READ" },
+      scopeSpec: "gmail:search",
+      allows: { "gmail:search": true },
     });
     this.tokenByBearer.set("good-full", {
       tokenId: "tok_full",
-      scopeSpec: "gmail:FULL_WRITE",
-      scopes: { gmail: "FULL_WRITE" },
+      scopeSpec: "gmail",
+      allows: { gmail: true },
     });
-    this.metadata.set("tok_safe", { tokenId: "tok_safe", scopeSpec: "gmail:SAFE_WRITE", createdAt: now, updatedAt: now });
+    this.metadata.set("tok_safe", { tokenId: "tok_safe", scopeSpec: "gmail:drafts", createdAt: now, updatedAt: now });
   }
 
   async createToken(scopeSpec: string) {
     const tokenId = "tok_created";
     const token = "created-token";
     const now = "2026-03-28T01:00:00.000Z";
-    this.tokenByBearer.set(token, { tokenId, scopeSpec, scopes: { gmail: "SAFE_WRITE" } });
+    this.tokenByBearer.set(token, { tokenId, scopeSpec, allows: { "gmail:drafts": true } });
     this.metadata.set(tokenId, { tokenId, scopeSpec, createdAt: now, updatedAt: now });
     return { tokenId, token, scopeSpec, createdAt: now, updatedAt: now };
   }
@@ -52,8 +52,8 @@ class FakeTokenManager implements ScopedTokenManager {
     }
     const token = "rotated-token";
     const now = "2026-03-28T02:00:00.000Z";
-    const nextScopeSpec = scopeSpec ?? "gmail:SAFE_WRITE";
-    this.tokenByBearer.set(token, { tokenId, scopeSpec: nextScopeSpec, scopes: { gmail: "SAFE_WRITE" } });
+    const nextScopeSpec = scopeSpec ?? "gmail:drafts";
+    this.tokenByBearer.set(token, { tokenId, scopeSpec: nextScopeSpec, allows: { "gmail:drafts": true } });
     this.metadata.set(tokenId, {
       tokenId,
       scopeSpec: nextScopeSpec,
@@ -83,7 +83,7 @@ class FakeTokenManager implements ScopedTokenManager {
 class FakePolicy implements GogPolicy {
   parseScopeSpec(spec: string) {
     return {
-      scopeMap: { gmail: "SAFE_WRITE" as const },
+      allowMap: { [spec.trim()]: true } as Record<string, true>,
       normalizedSpec: spec.trim(),
     };
   }
@@ -101,15 +101,15 @@ class FakePolicy implements GogPolicy {
         kind: "scoped",
         canonicalCommand: "gmail drafts send",
         topLevel: "gmail",
-        requiredScope: "FULL_WRITE",
+        allowEntries: ["gmail", "gmail:drafts"],
       };
     }
     if (argv[0] === "gmail") {
       return {
         kind: "scoped",
-        canonicalCommand: "gmail drafts create",
+        canonicalCommand: "gmail search",
         topLevel: "gmail",
-        requiredScope: "SAFE_WRITE",
+        allowEntries: ["gmail", "gmail:search"],
       };
     }
     return { kind: "unknown", reason: "unrecognized command" };
@@ -144,7 +144,7 @@ describe("admin token endpoints", () => {
           "X-Admin-Token": "admin-token",
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ scopeSpec: "gmail:SAFE_WRITE" }),
+        body: JSON.stringify({ scopeSpec: "gmail:drafts" }),
       }),
     );
     expect(response.status).toBe(200);
@@ -231,7 +231,7 @@ describe("POST /api auth and scopes", () => {
     expect(response.status).toBe(401);
   });
 
-  it("enforces scope level for non-auth commands", async () => {
+  it("enforces allowlist entries for non-auth commands", async () => {
     const { app } = buildApp();
 
     const denied = await app.fetch(
@@ -285,4 +285,3 @@ describe("POST /api auth and scopes", () => {
     expect(response.status).toBe(400);
   });
 });
-

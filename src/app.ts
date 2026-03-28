@@ -35,7 +35,7 @@ export interface ScopedTokenManager {
   resolveBearerToken(token: string): Promise<{
     tokenId: string;
     scopeSpec: string;
-    scopes: Record<string, "READ" | "SAFE_WRITE" | "FULL_WRITE">;
+    allows: Record<string, true>;
   } | null>;
 }
 
@@ -210,17 +210,11 @@ async function handleApi(request: Request, deps: AppDependencies): Promise<Respo
       return jsonResponse(401, { error: "unauthorized" });
     }
 
-    const granted = resolvedToken.scopes[access.topLevel];
-    if (!granted) {
+    const isAllowed = access.allowEntries.some((entry) => resolvedToken.allows[entry]);
+    if (!isAllowed) {
       return jsonResponse(403, {
         error: "forbidden_by_scope_policy",
-        reason: `missing scope for '${access.topLevel}'`,
-      });
-    }
-    if (!hasRequiredScope(granted, access.requiredScope)) {
-      return jsonResponse(403, {
-        error: "forbidden_by_scope_policy",
-        reason: `required=${access.requiredScope} granted=${granted} for '${access.topLevel}'`,
+        reason: `missing allowlist entry for '${access.canonicalCommand}' (expected one of: ${access.allowEntries.join(", ")})`,
       });
     }
   }
@@ -268,18 +262,6 @@ function extractOptionalStringField(body: unknown, field: string): string | null
     return null;
   }
   return value.trim();
-}
-
-function hasRequiredScope(
-  granted: "READ" | "SAFE_WRITE" | "FULL_WRITE",
-  required: "READ" | "SAFE_WRITE" | "FULL_WRITE",
-): boolean {
-  const score = {
-    READ: 1,
-    SAFE_WRITE: 2,
-    FULL_WRITE: 3,
-  } as const;
-  return score[granted] >= score[required];
 }
 
 function extractSubcommand(body: unknown): string | null {

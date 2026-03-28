@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "gws-security-wrapper",
+      "name": "gogcli-security-wrapper",
       "dependencies": {
         "@napi-rs/keyring": "^1.2.0",
       },

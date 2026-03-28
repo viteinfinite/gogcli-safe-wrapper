@@ -10,15 +10,15 @@ describe("loadConfig", () => {
 
     expect(config.port).toBe(3000);
     expect(config.gogBin).toBe("gog");
-    expect(config.secretService).toBe("gws-security-wrapper");
+    expect(config.secretService).toBe("gogcli-security-wrapper");
     expect(config.apiTokenAccount).toBe("api-token");
     expect(config.adminTokenAccount).toBe("admin-token");
-    expect(config.linuxFallbackPath).toBe("~/.config/gws-security-wrapper/secrets.json");
+    expect(config.linuxFallbackPath).toBe("~/.config/gogcli-security-wrapper/secrets.json");
   });
 
   it("loads linux config with fallback path", () => {
     const config = loadConfig({}, "linux");
     expect(config.platform).toBe("linux");
-    expect(config.linuxFallbackPath).toBe("~/.config/gws-security-wrapper/secrets.json");
+    expect(config.linuxFallbackPath).toBe("~/.config/gogcli-security-wrapper/secrets.json");
   });
 });

@@ -41,7 +41,7 @@ export async function startServer(config: AppConfig = loadConfig()) {
     fetch: app.fetch,
   });
 
-  console.log(`gws-security-wrapper listening on http://localhost:${server.port}`);
+  console.log(`gogcli-security-wrapper listening on http://localhost:${server.port}`);
   return server;
 }
 

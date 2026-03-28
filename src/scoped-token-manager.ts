@@ -1,6 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { GogPolicy } from "./gog-policy";
-import { sortScopeEntries, type ScopeLevel } from "./scopes";
 
 interface ScopedTokenRecord {
   tokenId: string;
@@ -36,7 +35,7 @@ export interface IssuedScopedToken extends ScopedTokenMetadata {
 export interface ResolvedScopedToken {
   tokenId: string;
   scopeSpec: string;
-  scopes: Record<string, ScopeLevel>;
+  allows: Record<string, true>;
 }
 
 export class ScopedTokenManager {
@@ -66,7 +65,7 @@ export class ScopedTokenManager {
     if (seedToken && seedToken.trim()) {
       const legacyScopeSpec = policy
         .allScopedTopLevels()
-        .map((key) => `${key}:FULL_WRITE`)
+        .map((key) => key)
         .join(",");
       await manager.createTokenInternal(legacyScopeSpec, "default", seedToken);
     }
@@ -137,11 +136,17 @@ export class ScopedTokenManager {
       return null;
     }
 
-    const parsed = this.policy.parseScopeSpec(record.scopeSpec);
+    let parsed: ReturnType<GogPolicy["parseScopeSpec"]>;
+    try {
+      parsed = this.policy.parseScopeSpec(record.scopeSpec);
+    } catch {
+      // Fail closed for legacy/invalid specs.
+      return null;
+    }
     return {
       tokenId: record.tokenId,
       scopeSpec: parsed.normalizedSpec,
-      scopes: parsed.scopeMap,
+      allows: parsed.allowMap,
     };
   }
 
@@ -247,24 +252,21 @@ function parseRegistryPayload(payload: string): TokenRegistry {
 }
 
 function normalizeScopeSpec(spec: string): string {
-  const entries = spec
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0)
-    .map((entry) => {
-      const [key, scope] = entry.split(":");
-      if (!key || !scope) {
-        return null;
-      }
-      const normalizedScope = scope.trim().toUpperCase() as ScopeLevel;
-      return { key: key.trim().toLowerCase(), scope: normalizedScope };
-    })
-    .filter((entry): entry is { key: string; scope: ScopeLevel } => entry !== null);
-
-  return sortScopeEntries(
-    Object.fromEntries(entries.map((entry) => [entry.key, entry.scope])),
+  return Array.from(
+    new Set(
+      spec
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0)
+        .map((entry) =>
+          entry
+            .split(":")
+            .map((part) => part.trim().toLowerCase())
+            .join(":"),
+        ),
+    ),
   )
-    .map((entry) => `${entry.key}:${entry.scope}`)
+    .sort((a, b) => a.localeCompare(b))
     .join(",");
 }
 

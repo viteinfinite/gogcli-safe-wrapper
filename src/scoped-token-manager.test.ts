@@ -17,25 +17,19 @@ class TestPolicy implements GogPolicy {
     return { kind: "unknown", reason: "not used in these tests" } as const;
   }
 
-  parseScopeSpec(spec: string): { scopeMap: Record<string, "READ" | "SAFE_WRITE" | "FULL_WRITE">; normalizedSpec: string } {
-    const scopeMap: Record<string, "READ" | "SAFE_WRITE" | "FULL_WRITE"> = {};
+  parseScopeSpec(spec: string): { allowMap: Record<string, true>; normalizedSpec: string } {
+    const allowMap: Record<string, true> = {};
     for (const entry of spec.split(",")) {
-      const [rawKey, rawScope] = entry.split(":");
-      if (!rawKey || !rawScope) {
+      const normalized = entry.trim().toLowerCase();
+      if (!normalized) {
         throw new Error("invalid scope spec");
       }
-      const key = rawKey.trim().toLowerCase();
-      const scope = rawScope.trim().toUpperCase();
-      if (scope !== "READ" && scope !== "SAFE_WRITE" && scope !== "FULL_WRITE") {
-        throw new Error("invalid scope");
-      }
-      scopeMap[key] = scope;
+      allowMap[normalized] = true;
     }
-    const normalizedSpec = Object.entries(scopeMap)
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([key, scope]) => `${key}:${scope}`)
+    const normalizedSpec = Object.keys(allowMap)
+      .sort((a, b) => a.localeCompare(b))
       .join(",");
-    return { scopeMap, normalizedSpec };
+    return { allowMap, normalizedSpec };
   }
 
   allScopedTopLevels(): string[] {
@@ -50,37 +44,36 @@ describe("ScopedTokenManager", () => {
     const resolved = await manager.resolveBearerToken("legacy-token-value");
     expect(resolved).not.toBeNull();
     expect(resolved?.tokenId).toBe("default");
-    expect(resolved?.scopeSpec).toBe("calendar:FULL_WRITE,drive:FULL_WRITE,gmail:FULL_WRITE");
+    expect(resolved?.scopeSpec).toBe("calendar,drive,gmail");
   });
 
   it("creates and rotates scoped tokens", async () => {
     const store = new InMemoryRegistryStore(null);
     const manager = await ScopedTokenManager.initialize(store, new TestPolicy(), null);
 
-    const created = await manager.createToken("gmail:SAFE_WRITE");
+    const created = await manager.createToken("gmail:drafts");
     expect(created.tokenId.startsWith("tok_")).toBeTrue();
-    expect(created.scopeSpec).toBe("gmail:SAFE_WRITE");
+    expect(created.scopeSpec).toBe("gmail:drafts");
 
     const resolvedCreated = await manager.resolveBearerToken(created.token);
     expect(resolvedCreated?.tokenId).toBe(created.tokenId);
 
-    const rotated = await manager.rotateToken(created.tokenId, "gmail:FULL_WRITE");
-    expect(rotated.scopeSpec).toBe("gmail:FULL_WRITE");
+    const rotated = await manager.rotateToken(created.tokenId, "gmail");
+    expect(rotated.scopeSpec).toBe("gmail");
 
     const oldResolved = await manager.resolveBearerToken(created.token);
     expect(oldResolved).toBeNull();
     const newResolved = await manager.resolveBearerToken(rotated.token);
-    expect(newResolved?.scopeSpec).toBe("gmail:FULL_WRITE");
+    expect(newResolved?.scopeSpec).toBe("gmail");
   });
 
   it("revokes tokens", async () => {
     const store = new InMemoryRegistryStore(null);
     const manager = await ScopedTokenManager.initialize(store, new TestPolicy(), null);
-    const created = await manager.createToken("gmail:SAFE_WRITE");
+    const created = await manager.createToken("gmail:drafts");
 
     await manager.revokeToken(created.tokenId);
     const resolved = await manager.resolveBearerToken(created.token);
     expect(resolved).toBeNull();
   });
 });
-

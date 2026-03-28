@@ -9,33 +9,40 @@ describe("gog policy", () => {
     expect(access.kind).toBe("admin");
   });
 
-  it("classifies gmail draft creation as SAFE_WRITE", () => {
+  it("maps gmail draft commands to allowlist entries", () => {
     const access = policy.resolveAccess(["gmail", "drafts", "create"]);
     expect(access.kind).toBe("scoped");
     if (access.kind === "scoped") {
       expect(access.topLevel).toBe("gmail");
-      expect(access.requiredScope).toBe("SAFE_WRITE");
+      expect(access.allowEntries).toEqual(["gmail", "gmail:drafts"]);
     }
   });
 
-  it("classifies gmail draft sending as FULL_WRITE", () => {
-    const access = policy.resolveAccess(["gmail", "drafts", "send", "abc"]);
+  it("maps gmail search commands to allowlist entries", () => {
+    const access = policy.resolveAccess(["gmail", "search", "--today"]);
     expect(access.kind).toBe("scoped");
     if (access.kind === "scoped") {
       expect(access.topLevel).toBe("gmail");
-      expect(access.requiredScope).toBe("FULL_WRITE");
+      expect(access.allowEntries).toEqual(["gmail", "gmail:search"]);
     }
   });
 
-  it("normalizes alias scope keys in scopeSpec parsing", () => {
-    const parsed = policy.parseScopeSpec("mail:read,calendar:FULL_WRITE");
-    expect(parsed.normalizedSpec).toBe("calendar:FULL_WRITE,gmail:READ");
-    expect(parsed.scopeMap.gmail).toBe("READ");
-    expect(parsed.scopeMap.calendar).toBe("FULL_WRITE");
+  it("keeps canonical redirect for top-level aliases", () => {
+    const access = policy.resolveAccess(["gmail", "drafts", "send", "abc"]);
+    expect(access.kind).toBe("scoped");
+    if (access.kind === "scoped") {
+      expect(access.canonicalCommand).toBe("gmail drafts send");
+    }
   });
 
-  it("rejects auth key in scopeSpec", () => {
-    expect(() => policy.parseScopeSpec("auth:FULL_WRITE")).toThrow("admin-only");
+  it("normalizes alias allowlist keys in scopeSpec parsing", () => {
+    const parsed = policy.parseScopeSpec("mail:find,calendar");
+    expect(parsed.normalizedSpec).toBe("calendar,gmail:search");
+    expect(parsed.allowMap.calendar).toBeTrue();
+    expect(parsed.allowMap["gmail:search"]).toBeTrue();
+  });
+
+  it("rejects auth key and legacy scope levels in scopeSpec", () => {
+    expect(() => policy.parseScopeSpec("auth")).toThrow("admin-only");
   });
 });
-

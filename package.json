@@ -1,11 +1,12 @@
 {
-  "name": "gws-security-wrapper",
+  "name": "gogcli-security-wrapper",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "bun run src/server.ts",
-    "test": "bun test"
+    "test": "bun test",
+    "discover:gog-third-level": "bun run scripts/discover-gog-third-level.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.3.5"
