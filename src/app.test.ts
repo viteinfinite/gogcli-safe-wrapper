@@ -312,4 +312,212 @@ describe("POST /api auth and scopes", () => {
     );
     expect(response.status).toBe(400);
   });
+
+  it("returns 400 when neither subcommand nor subcommands is provided", async () => {
+    const { app } = buildApp();
+    const response = await app.fetch(
+      new Request("http://localhost/api", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      }),
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("prefers subcommand over subcommands when both provided", async () => {
+    const { app, runner } = buildApp();
+    const response = await app.fetch(
+      new Request("http://localhost/api", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer good-full",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          subcommand: "gmail search --query test",
+          subcommands: ["gmail search --query other"],
+        }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    expect(runner.calls).toEqual([["gmail", "search", "--query", "test"]]);
+  });
+});
+
+describe("POST /api batch (subcommands)", () => {
+  it("executes multiple commands in parallel and returns array", async () => {
+    const { app, runner } = buildApp();
+    const response = await app.fetch(
+      new Request("http://localhost/api", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer good-full",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          subcommands: [
+            "gmail search --query inbox",
+            "gmail drafts send --id x",
+          ],
+        }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("application/json; charset=utf-8");
+
+    const results = (await response.json()) as Array<Record<string, unknown>>;
+    expect(results).toHaveLength(2);
+    expect(results[0]).toEqual({ output: "ok\n", exitCode: 0 });
+    expect(results[1]).toEqual({ output: "ok\n", exitCode: 0 });
+
+    expect(runner.calls).toHaveLength(2);
+    expect(runner.calls[0]).toEqual(["gmail", "search", "--query", "inbox"]);
+    expect(runner.calls[1]).toEqual(["gmail", "drafts", "send", "--id", "x"]);
+  });
+
+  it("returns per-item errors for partial failures (partial success)", async () => {
+    const { app, runner } = buildApp();
+    const response = await app.fetch(
+      new Request("http://localhost/api", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer good-read",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          subcommands: [
+            "gmail search --query inbox",
+            "gmail drafts send --id x",
+          ],
+        }),
+      }),
+    );
+    expect(response.status).toBe(200);
+
+    const results = (await response.json()) as Array<Record<string, unknown>>;
+    expect(results).toHaveLength(2);
+    // good-read has gmail:search scope — first command should succeed
+    expect(results[0]).toEqual({ output: "ok\n", exitCode: 0 });
+    // good-read lacks gmail:drafts scope — second command should fail
+    expect(results[1].error).toBe("forbidden_by_scope_policy");
+    expect(runner.calls).toHaveLength(1);
+  });
+
+  it("returns 400 for batch exceeding max size", async () => {
+    const { app } = buildApp();
+    const tooMany = Array(11).fill("gmail search --query x");
+    const response = await app.fetch(
+      new Request("http://localhost/api", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer good-full",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ subcommands: tooMany }),
+      }),
+    );
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toContain("batch size exceeds maximum");
+  });
+
+  it("returns 400 for empty subcommands array", async () => {
+    const { app } = buildApp();
+    const response = await app.fetch(
+      new Request("http://localhost/api", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer good-full",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ subcommands: [] }),
+      }),
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("requires auth for batch requests", async () => {
+    const { app } = buildApp();
+    const response = await app.fetch(
+      new Request("http://localhost/api", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ subcommands: ["gmail search --query x"] }),
+      }),
+    );
+    // With no auth header, the batch resolver gets no token;
+    // the scoped command gets per-item "unauthorized" error
+    expect(response.status).toBe(200);
+    const results = (await response.json()) as Array<Record<string, unknown>>;
+    expect(results[0].error).toBe("unauthorized");
+  });
+
+  it("per-item metacharacter rejection", async () => {
+    const { app, runner } = buildApp();
+    const response = await app.fetch(
+      new Request("http://localhost/api", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer good-full",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          subcommands: [
+            "gmail search --query ok",
+            "gmail drafts create; whoami",
+          ],
+        }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    const results = (await response.json()) as Array<Record<string, unknown>>;
+    expect(results).toHaveLength(2);
+    expect(results[0]).toEqual({ output: "ok\n", exitCode: 0 });
+    expect(results[1].error).toBe("subcommand contains disallowed metacharacters");
+    expect(runner.calls).toHaveLength(1);
+  });
+
+  it("supports admin auth for batch commands", async () => {
+    const { app, runner } = buildApp();
+    const response = await app.fetch(
+      new Request("http://localhost/api", {
+        method: "POST",
+        headers: {
+          "X-Admin-Token": "admin-token",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          subcommands: ["auth status --plain"],
+        }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    const results = (await response.json()) as Array<Record<string, unknown>>;
+    expect(results[0]).toEqual({ output: "ok\n", exitCode: 0 });
+    expect(runner.calls).toEqual([["auth", "status", "--plain"]]);
+  });
+
+  it("filters out non-string entries in subcommands array", async () => {
+    const { app, runner } = buildApp();
+    const response = await app.fetch(
+      new Request("http://localhost/api", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer good-full",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          subcommands: ["gmail search --query ok", 42, null, "  "],
+        }),
+      }),
+    );
+    // Only the valid string should survive filtering
+    expect(response.status).toBe(200);
+    const results = (await response.json()) as Array<Record<string, unknown>>;
+    expect(results).toHaveLength(1);
+    expect(results[0]).toEqual({ output: "ok\n", exitCode: 0 });
+    expect(runner.calls).toHaveLength(1);
+  });
 });
