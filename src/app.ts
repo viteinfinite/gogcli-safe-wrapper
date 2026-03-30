@@ -62,6 +62,10 @@ export function createApp(deps: AppDependencies): App {
     fetch: async (request: Request): Promise<Response> => {
       const url = new URL(request.url);
 
+      if (request.method === "GET" && url.pathname === "/health") {
+        return jsonResponse(200, { status: "ok" });
+      }
+
       if (request.method === "POST" && url.pathname === "/auth/rotate") {
         return await handleRotate(request, deps);
       }
